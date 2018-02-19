@@ -1,0 +1,18 @@
+[package]
+name = "coloratura"
+description = "A color-management bot for Discord."
+license = "MIT/Apache-2.0"
+version = "0.1.0"
+authors = ["Brayden Banks <bb010g@gmail.com>"]
+publish = false
+
+[dependencies]
+dotenv = "0.10.1"
+failure = "0.1.1"
+#serenity = { git = "https://github.com/bb010g/serenity.git", branch = "lacking_ownership" }
+serenity = "0.5.1"
+tinycdb = "0.0.7"
+typemap = "0.3.3"
+regex = "0.2.6"
+lazy_static = "1.0.0"
+memchr = "2.0.1"
