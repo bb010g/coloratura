@@ -24,12 +24,15 @@ use serenity::client::bridge::gateway::{ShardId, ShardManager};
 use serenity::framework::standard::{help_commands, DispatchError, HelpBehaviour, StandardFramework};
 use serenity::http;
 use serenity::model::channel::{Channel, Message};
-use serenity::model::gateway::Ready;
+use serenity::model::gateway::{Game, Ready};
 use serenity::model::id::RoleId;
 use serenity::model::permissions::Permissions;
 use serenity::prelude::Mutex;
-use serenity::utils;
+use serenity::utils::Colour as SColour;
 use typemap::Key;
+
+mod db;
+mod util;
 
 use util::{Args, CmdFn};
 
@@ -71,23 +74,17 @@ fn main2() -> Result<(), Error> {
     client.with_framework(
         StandardFramework::new()
             .configure(|c| c.owners(owners).prefix("%"))
-            .on_dispatch_error(|_ctx, msg, error| match error {
+            .on_dispatch_error(|_ctx, msg, err| match err {
                 DispatchError::RateLimited(seconds) => {
                     let _ = msg.reply(&format!("Try again in {} seconds.", seconds));
                 }
-                DispatchError::NotEnoughArguments { min, given } => {
-                    let _ = msg.reply(&format!(
-                        "Not enough arguments ({} needed, {} given).",
-                        min, given
-                    ));
-                }
-                DispatchError::TooManyArguments { max, given } => {
-                    let _ = msg.reply(&format!(
-                        "Too many arguments ({} needed, {} given).",
-                        max, given
-                    ));
-                }
                 _ => {}
+            })
+            .after(|_ctx, msg, _cmd_name, res| match res {
+                Ok(()) => {}
+                Err(e) => {
+                    let _ = msg.reply(&format!("Error: {}", e.0));
+                }
             })
             .simple_bucket("color", 1)
             .cmd("about", CmdFn(about))
@@ -95,7 +92,7 @@ fn main2() -> Result<(), Error> {
             .cmd("ping", CmdFn(ping))
             .group("Owner", |g| {
                 g.owners_only(true)
-                    .cmd("playing", CmdFn(quit))
+                    .cmd("presence", CmdFn(presence))
                     .cmd("quit", CmdFn(quit))
             })
             .group("Color", |g| {
@@ -138,7 +135,7 @@ fn about_msg(m: CreateMessage) -> CreateMessage {
     })
 }
 
-// Utility Commands
+// Utility commands
 
 fn about(_: &mut Context, msg: &Message, _: Args) -> Result<(), Error> {
     let _ = match msg.channel() {
@@ -177,6 +174,38 @@ fn latency(ctx: &mut Context, msg: &Message, _: Args) -> Result<(), Error> {
     Ok(())
 }
 
+// Owner commands
+
+fn presence(ctx: &mut Context, msg: &Message, mut args: Args) -> Result<(), Error> {
+    let game = match args.next() {
+        Some(ref arg) if arg == "playing" => {
+            let name = args.next().ok_or_else(|| format_err!("Name needed."))?;
+            Some(Game::playing(&name))
+        }
+        Some(ref arg) if arg == "streaming" => {
+            let name = args.next().ok_or_else(|| format_err!("Name needed."))?;
+            let url = args.next().ok_or_else(|| format_err!("URL needed."))?;
+            Some(Game::streaming(&name, &url))
+        }
+        Some(ref arg) if arg == "listening" => {
+            let name = args.next().ok_or_else(|| format_err!("Name needed."))?;
+            Some(Game::listening(&name))
+        }
+        Some(ref arg) if arg == "reset" => None,
+        _ => {
+            bail!(
+                "Give `playing <name>`, `streaming <name> <url>`, `listening <name>`, or `none`."
+            );
+        }
+    };
+    match game {
+        Some(game) => ctx.set_game(game),
+        None => ctx.reset_presence(),
+    };
+    let _ = msg.reply("Done!");
+    Ok(())
+}
+
 fn quit(ctx: &mut Context, msg: &Message, mut args: Args) -> Result<(), Error> {
     match args.next() {
         None => {
@@ -195,8 +224,7 @@ fn quit(ctx: &mut Context, msg: &Message, mut args: Args) -> Result<(), Error> {
             Ok(())
         }
         Some(arg) => {
-            let _ = msg.reply(&format!("Unknown argument \"{}\".", arg));
-            Ok(())
+            bail!("Unknown argument \"{}\".", arg);
         }
     }
 }
@@ -209,15 +237,18 @@ impl str::FromStr for Color {
     type Err = Compat<Error>;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         lazy_static! {
-            static ref RE: Regex = Regex::new(r"^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$").unwrap();
+            static ref RE: Regex =
+                Regex::new(r"^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$")
+                    .expect("Color regex failed compilation");
         }
         let s = s.to_lowercase();
         let caps = RE.captures(&s)
             .ok_or_else(|| format_err!("\"{}\" is not a RGB hex color", s).compat())?;
 
-        let r = caps.get(1).unwrap();
-        let g = caps.get(2).unwrap();
-        let b = caps.get(3).unwrap();
+        let re_unwrap = "Color regex captures should always be present";
+        let r = caps.get(1).expect(re_unwrap);
+        let g = caps.get(2).expect(re_unwrap);
+        let b = caps.get(3).expect(re_unwrap);
 
         let r = u8::from_str_radix(r.as_str(), 16)
             .map_err(|e| format_err!("Red parsing error: {}", e).compat())?;
@@ -234,9 +265,9 @@ impl fmt::Display for Color {
         write!(f, "{:02x}{:02x}{:02x}", self.0, self.1, self.2)
     }
 }
-impl From<Color> for utils::Colour {
+impl From<Color> for SColour {
     fn from(c: Color) -> Self {
-        utils::Colour::from_rgb(c.0, c.1, c.2)
+        SColour::from_rgb(c.0, c.1, c.2)
     }
 }
 
@@ -259,10 +290,10 @@ fn color_set(_: &mut Context, msg: &Message, mut args: Args) -> Result<(), Error
 
     let guild_id = { guild.read().id };
     let guild_str = format!("{}", guild_id);
-    let data = util::db::data(&guild_str);
+    let data = db::data(&guild_str);
 
-    util::db::ensure_dir(&data)?;
-    let mut users = util::db::Guild::Users.open(&data)?;
+    db::ensure_dir(&data)?;
+    let mut users = db::Guild::Users.open(&data)?;
 
     let old_role = users.as_mut().and_then(|db| {
         db.find(author_id_bytes)
@@ -270,7 +301,7 @@ fn color_set(_: &mut Context, msg: &Message, mut args: Args) -> Result<(), Error
             .and_then(|s| s.parse::<RoleId>().ok())
             .and_then(|id| guild.write().roles.get(&id).map(|r| r.id))
     });
-    let mut colors = util::db::Guild::Colors.open(&data)?;
+    let mut colors = db::Guild::Colors.open(&data)?;
     let role = colors
         .as_mut()
         .and_then(|colors| {
@@ -282,8 +313,8 @@ fn color_set(_: &mut Context, msg: &Message, mut args: Args) -> Result<(), Error
         })
         .map(Ok)
         .unwrap_or_else(|| {
-            util::db::Guild::Colors.rm_tmp(&data)?;
-            let colour = utils::Colour::from(color);
+            db::Guild::Colors.rm_tmp(&data)?;
+            let colour = SColour::from(color);
             guild
                 .write()
                 .create_role(|r| {
@@ -294,7 +325,7 @@ fn color_set(_: &mut Context, msg: &Message, mut args: Args) -> Result<(), Error
                 .map(|r| r.id)
                 .map_err(|e| format_err!("Color role creation failed: {:?}", e))
                 .and_then(|role| {
-                    util::db::Guild::Colors.set(
+                    db::Guild::Colors.set(
                         &data,
                         |ndb| {
                             for (k, v) in colors.as_mut().iter_mut().flat_map(|i| i.iter()) {
@@ -328,7 +359,7 @@ fn color_set(_: &mut Context, msg: &Message, mut args: Args) -> Result<(), Error
             })?;
     };
 
-    util::db::Guild::Users.rm_tmp(&data)?;
+    db::Guild::Users.rm_tmp(&data)?;
 
     guild
         .write()
@@ -340,7 +371,7 @@ fn color_set(_: &mut Context, msg: &Message, mut args: Args) -> Result<(), Error
                 .map_err(|e| format_err!("Couldn't add user to new color role {}: {}", role, e))
         })?;
 
-    util::db::Guild::Users.set(
+    db::Guild::Users.set(
         &data,
         |ndb| {
             for (k, v) in users.as_mut().iter_mut().flat_map(|i| i.iter()) {
@@ -368,9 +399,9 @@ fn color_unset(_: &mut Context, msg: &Message, _: Args) -> Result<(), Error> {
 
     let guild_id = { guild.read().id };
     let guild_str = format!("{}", guild_id);
-    let data = util::db::data(&guild_str);
+    let data = db::data(&guild_str);
 
-    let mut users = util::db::Guild::Users
+    let mut users = db::Guild::Users
         .open(&data)
         .and_then(|db| db.ok_or_else(|| format_err!("There are no colors for this guild.")))?;
 
@@ -382,7 +413,7 @@ fn color_unset(_: &mut Context, msg: &Message, _: Args) -> Result<(), Error> {
         .and_then(|id| guild.read().roles.get(&id).map(|r| r.id))
         .ok_or_else(|| format_err!("You have no active color."))?;
 
-    util::db::Guild::Users.rm_tmp(&data)?;
+    db::Guild::Users.rm_tmp(&data)?;
 
     guild
         .write()
@@ -395,7 +426,7 @@ fn color_unset(_: &mut Context, msg: &Message, _: Args) -> Result<(), Error> {
             })
         })?;
 
-    util::db::Guild::Users.set(
+    db::Guild::Users.set(
         &data,
         |ndb| {
             for (k, v) in users.iter() {
@@ -424,208 +455,6 @@ fn main() {
         Err(err) => {
             eprintln!("{}", err);
             std::process::exit(1);
-        }
-    }
-}
-
-mod util {
-    use std::borrow::Cow;
-
-    use failure::Error;
-    use memchr::Memchr2;
-    use serenity::client::Context;
-    use serenity::framework::standard::{Args as SArgs, Command, CommandError};
-    use serenity::model::channel::Message;
-
-    pub struct CmdFn<F>(pub F);
-    impl<F: Sync + Send + 'static + Fn(&mut Context, &Message, Args) -> Result<(), Error>> Command
-        for CmdFn<F>
-    {
-        fn execute(
-            &self,
-            ctx: &mut Context,
-            msg: &Message,
-            args: SArgs,
-        ) -> Result<(), CommandError> {
-            match self.0(ctx, msg, Args::new(args.full())) {
-                Ok(()) => Ok(()),
-                Err(e) => {
-                    let _ = msg.reply(&format!("Error: {}", e));
-                    Ok(())
-                }
-            }
-        }
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct Args<'a> {
-        message: Option<&'a str>,
-    }
-    impl<'a> Args<'a> {
-        pub fn new(message: &'a str) -> Args {
-            Args {
-                message: match message {
-                    msg if !msg.is_empty() => Some(msg),
-                    _ => None,
-                },
-            }
-        }
-    }
-    impl<'a> Iterator for Args<'a> {
-        type Item = Cow<'a, str>;
-
-        fn next(&mut self) -> Option<Cow<'a, str>> {
-            let message = match self.message {
-                Some(m) => m,
-                None => return None,
-            };
-            if message.starts_with('"') {
-                let mut out: Option<String> = None;
-                let mut last_bs: Option<usize> = None;
-                let mut from = 1;
-                let mut to = 0;
-
-                let msg_bytes = message.as_bytes();
-                let mut memchr2 = Memchr2::new(b'"', b'\\', msg_bytes).skip(1);
-
-                macro_rules! push_esc {
-                    ($memchr2:expr, $bs:expr) => ({
-                        last_bs = None;
-                        $memchr2.next();
-                        out.get_or_insert_with(String::new).push_str(&message[from..$bs]);
-                        from = $bs;
-                    })
-                }
-                while let Some(i) = memchr2.next() {
-                    match *unsafe { msg_bytes.get_unchecked(i) } {
-                        b'\\' => match last_bs {
-                            Some(bs) => push_esc!(memchr2, bs),
-                            None => last_bs = Some(i),
-                        },
-                        b'"' => match last_bs {
-                            Some(bs) => push_esc!(memchr2, bs),
-                            None => {
-                                to = i;
-                                break;
-                            }
-                        },
-                        _ => unreachable!(),
-                    }
-                }
-                self.message = if to == 0 {
-                    to = message.len();
-                    None
-                } else {
-                    match message[to..].trim_left() {
-                        new if !new.is_empty() => Some(new),
-                        _ => None,
-                    }
-                };
-
-                Some(match out {
-                    Some(mut out) => {
-                        out.push_str(&message[from..to]);
-                        Cow::Owned(out)
-                    }
-                    None => Cow::Borrowed(&message[1..to]),
-                })
-            } else {
-                match message.find(' ') {
-                    None => {
-                        self.message = None;
-                        Some(Cow::Borrowed(message))
-                    }
-                    Some(ws) => {
-                        let (arg, new) = message.split_at(ws);
-                        self.message = match new.trim_left() {
-                            new if !new.is_empty() => Some(new),
-                            _ => None,
-                        };
-                        Some(Cow::Borrowed(arg))
-                    }
-                }
-            }
-        }
-    }
-
-    pub mod db {
-        use std::fs;
-        use std::path::{Path, PathBuf};
-
-        use failure::Error;
-        use tinycdb::{Cdb, CdbCreator};
-
-        pub fn open(path: &Path) -> Result<Option<Box<Cdb>>, Error> {
-            if path.exists() {
-                Cdb::open(&path)
-                    .map(Some)
-                    .map_err(|e| format_err!("DB couldn't be opened: {:?}", e))
-            } else {
-                Ok(None)
-            }
-        }
-
-        pub fn data(guild: &str) -> PathBuf {
-            PathBuf::from(format!("./data/{}", guild))
-        }
-        pub fn ensure_dir(dir: &Path) -> Result<(), Error> {
-            if !dir.exists() {
-                fs::create_dir_all(dir).map_err(|e| format_err!("Can't create directory: {}", e))
-            } else {
-                Ok(())
-            }
-        }
-
-        #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-        pub enum Guild {
-            Colors,
-            Users,
-        }
-        impl Guild {
-            pub fn name(self) -> &'static str {
-                match self {
-                    Guild::Colors => "colors",
-                    Guild::Users => "users",
-                }
-            }
-            pub fn path(self, guild: &Path) -> PathBuf {
-                match self {
-                    Guild::Colors => guild.join("colors.cdb"),
-                    Guild::Users => guild.join("users.cdb"),
-                }
-            }
-            pub fn tmp_path(self, guild: &Path) -> PathBuf {
-                match self {
-                    Guild::Colors => guild.join("colors.cdb.tmp"),
-                    Guild::Users => guild.join("users.cdb.tmp"),
-                }
-            }
-            pub fn open(self, guild: &Path) -> Result<Option<Box<Cdb>>, Error> {
-                open(&self.path(guild))
-            }
-            pub fn rm_tmp(self, guild: &Path) -> Result<(), Error> {
-                let tmp_path = self.tmp_path(guild);
-                if tmp_path.exists() {
-                    fs::remove_file(&tmp_path).map_err(|e| {
-                        format_err!("Couldn't remove old tmp {} DB: {}", self.name(), e)
-                    })
-                } else {
-                    Ok(())
-                }
-            }
-            pub fn set<C, F, T>(self, guild: &Path, creator: C, f: F) -> Result<T, Error>
-            where
-                C: FnMut(&mut CdbCreator),
-                F: FnOnce(Box<Cdb>) -> T,
-            {
-                let tmp_path = self.tmp_path(guild);
-                let out = Cdb::new(&tmp_path, creator)
-                    .map(f)
-                    .map_err(|e| format_err!("Error creating {} DB: {:?}", self.name(), e))?;
-                fs::rename(&tmp_path, &self.path(guild))
-                    .map_err(|e| format_err!("Couldn't replace old {} DB: {}", self.name(), e))?;
-                Ok(out)
-            }
         }
     }
 }
