@@ -468,7 +468,10 @@ fn color_clean(_: &mut Context, msg: &Message, _: Args) -> Result<(), Error> {
     db::Guild::Colors.rm_tmp(&data)?;
 
     {
-        let roles = { &guild.read().roles };
+        // If you don't clone or get a fresh read lock every iteration,
+        // you'll deadlock when starting your third deletion.
+        // I have no idea why this happens.
+        let roles = { &guild.read().roles.clone() };
         for (role_id_bytes, used) in &roles_used {
             if *used {
                 continue;
