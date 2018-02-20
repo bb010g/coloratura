@@ -10,7 +10,7 @@ extern crate tinycdb;
 extern crate typemap;
 
 use std::env;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::str;
 use std::sync::Arc;
@@ -443,7 +443,62 @@ fn color_unset(_: &mut Context, msg: &Message, _: Args) -> Result<(), Error> {
 }
 
 fn color_clean(_: &mut Context, msg: &Message, _: Args) -> Result<(), Error> {
-    let _ = msg.reply("Not implemented yet. Will clean up leftover color roles.");
+    let guild = msg.guild()
+        .ok_or_else(|| format_err!("This command should only run in guilds."))?;
+    let guild_id = { guild.read().id };
+    let guild_str = format!("{}", guild_id);
+    let data = db::data(&guild_str);
+
+    let mut colors = db::Guild::Colors.open(&data)?;
+    let mut colors = colors.as_mut();
+    let mut users = db::Guild::Users.open(&data)?;
+    let mut users = users.as_mut();
+
+    let mut roles_used: HashMap<&[u8], bool> = HashMap::new();
+
+    let mut colors_cache = HashMap::new();
+    for (color, role) in colors.iter_mut().flat_map(|db| db.iter()) {
+        colors_cache.insert(color, role);
+        roles_used.insert(role, false);
+    }
+    for (_user, role) in users.iter_mut().flat_map(|db| db.iter()) {
+        roles_used.insert(role, true);
+    }
+
+    db::Guild::Colors.rm_tmp(&data)?;
+
+    {
+        let roles = { &guild.read().roles };
+        for (role_id_bytes, used) in &roles_used {
+            if *used {
+                continue;
+            }
+            let role_id_str = str::from_utf8(role_id_bytes)
+                .map_err(|e| format_err!("Role ID `{:?}` wasn't UTF-8: {}", role_id_bytes, e))?;
+            let role_id = role_id_str
+                .parse::<RoleId>()
+                .map_err(|e| format_err!("Role ID {} wasn't a valid RoleID: {}", role_id_str, e))?;
+            if let Some(role) = roles.get(&role_id) {
+                role.delete()
+                    .map_err(|_| format_err!("Failed to delete {}.", role_id))?;
+            }
+        }
+    }
+
+    db::Guild::Colors.set(
+        &data,
+        |ndb| {
+            for (color, role_id) in &colors_cache {
+                if *roles_used.get(role_id).unwrap_or(&true) {
+                    let _ = ndb.add(color, role_id);
+                }
+            }
+        },
+        |_| (),
+    )?;
+
+    let _ = msg.reply("Colors cleaned.");
+
     Ok(())
 }
 
