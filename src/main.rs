@@ -91,16 +91,18 @@ fn main2() -> Result<(), Error> {
             .cmd("latency", CmdFn(latency))
             .cmd("ping", CmdFn(ping))
             .group("Owner", |g| {
+                // Can't use cmd because it doesn't carry over group config
                 g.owners_only(true)
-                    .cmd("presence", CmdFn(presence))
-                    .cmd("quit", CmdFn(quit))
+                    .command("presence", |c| c.cmd(CmdFn(presence)))
+                    .command("quit", |c| c.cmd(CmdFn(quit)))
             })
             .group("Color", |g| {
+                // Can't use cmd because it doesn't carry over group config
                 g.prefix("color")
                     .bucket("color")
                     .guild_only(true)
-                    .cmd("set", CmdFn(color_set))
-                    .cmd("unset", CmdFn(color_unset))
+                    .command("set", |c| c.cmd(CmdFn(color_set)))
+                    .command("unset", |c| c.cmd(CmdFn(color_unset)))
                     .command("clean", |c| {
                         c.cmd(CmdFn(color_clean))
                             .required_permissions(Permissions::ADMINISTRATOR)
