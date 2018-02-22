@@ -25,7 +25,7 @@ use serenity::framework::standard::{help_commands, DispatchError, HelpBehaviour,
 use serenity::http;
 use serenity::model::channel::{Channel, Message};
 use serenity::model::gateway::{Game, Ready};
-use serenity::model::id::RoleId;
+use serenity::model::id::{RoleId, UserId};
 use serenity::model::permissions::Permissions;
 use serenity::prelude::Mutex;
 use serenity::utils::Colour as SColour;
@@ -63,13 +63,24 @@ fn main2() -> Result<(), Error> {
         data.insert::<ShardManagerContainer>(Arc::clone(&client.shard_manager));
     }
 
-    let owners = http::get_current_application_info()
-        .map(|info| {
-            let mut set = HashSet::new();
-            set.insert(info.owner.id);
-            set
-        })
-        .map_err(|e| format_err!("Couldn't get application info: {:?}", e))?;
+    let owners = {
+        let mut set = HashSet::new();
+        http::get_current_application_info()
+            .map(|info| set.insert(info.owner.id))
+            .map_err(|e| format_err!("Couldn't get application info: {:?}", e))?;
+        if let Ok(eo) = env::var("EXTRA_OWNERS") {
+            eo.split(',')
+                .map(|o| {
+                    o.parse::<u64>()
+                        .map(|uid| {
+                            set.insert(UserId(uid));
+                        })
+                        .map_err(|e| format_err!("Not a valid UID: {}", e))
+                })
+                .collect::<Result<(), _>>()?;
+        }
+        set
+    };
 
     client.with_framework(
         StandardFramework::new()
