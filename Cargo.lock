@@ -95,7 +95,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "coloratura"
+name = "kamasutra"
 version = "0.1.0"
 dependencies = [
  "dotenv 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)",
