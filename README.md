@@ -1,4 +1,4 @@
-# coloratura
+# kamasutra
 
 Coloratura is a color-management bot for Discord built with [Serenity].
 It uses [tinycdb] for storage.

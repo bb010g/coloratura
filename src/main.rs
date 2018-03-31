@@ -137,7 +137,7 @@ fn about_msg(m: CreateMessage) -> CreateMessage {
             "Coloratura is a color-management bot by <@!72791153467990016>. ",
             "She's written in Rust with ",
             "[Serenity](https://github.com/zeyla/serenity).",
-            "Source is [available](https://github.com/bb010g/coloratura) ",
+            "Source is [available](https://github.com/bb010g/kamasutra) ",
             "under MIT/Apache-2.0 dual license.",
             "\n\n",
             "Add her to your server with [this link](",
@@ -331,7 +331,7 @@ fn color_set(_: &mut Context, msg: &Message, mut args: Args) -> Result<(), Error
             guild
                 .write()
                 .create_role(|r| {
-                    r.name(&format!("coloratura#{}", color_str))
+                    r.name(&format!("kamasutra#{}", color_str))
                         .permissions(Permissions::empty())
                         .colour(colour.0 as u64)
                 })
